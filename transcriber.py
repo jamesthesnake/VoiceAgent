@@ -39,7 +39,7 @@ class DeepgramConfig:
     endpointing_ms: int = 120
     utterance_end_ms: int | None = None
     channels: int = 1
-    blocksize: int = 480
+    blocksize: int = 160
     mic_device: int | str | None = None
 
 
@@ -214,7 +214,7 @@ class _MicrophoneCapture:
         blocksize: int,
         device: int | str | None,
         session_time: Callable[[], float],
-        timing: _TurnTiming,
+        timing: Callable[[], _TurnTiming],
         is_muted: Callable[[], bool] | None = None,
         vad: _LocalVAD | None = None,
     ) -> None:
@@ -224,7 +224,7 @@ class _MicrophoneCapture:
         self._blocksize = blocksize
         self._device = _coerce_device(device)
         self._session_time = session_time
-        self._timing = timing
+        self._get_timing = timing  # callable returning current _TurnTiming
         self._is_muted = is_muted
         self._vad = vad
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -259,7 +259,7 @@ class _MicrophoneCapture:
             capture_start = callback_now - max(current_time - input_adc_time, 0.0)
         else:
             capture_start = callback_now - (frames / self._sample_rate)
-        self._timing.set_capture_origin(capture_start)
+        self._get_timing().set_capture_origin(capture_start)
         # Always feed the VAD from the real mic audio so local onset/silence
         # detection still works even when we choose to send silence upstream.
         chunk = bytes(indata)
@@ -294,6 +294,7 @@ class _TranscriptEmitter:
         self._last_word: TimedWord | None = None
 
     def emit_word(self, word: TimedWord, notes: str, revised: bool = False) -> None:
+        _t0 = time.perf_counter()
         saved_at = self._session_time()  # Timestamp immediately on arrival.
         events: list[CharEvent] = []
         word_start = self._timing.word_time(word.start)
@@ -333,6 +334,7 @@ class _TranscriptEmitter:
             )
 
         self._logger.write_events(events)
+        overhead_us = (time.perf_counter() - _t0) * 1_000_000.0
         self._latency_logger.write_event(
             WordLatencyEvent(
                 word=text,
@@ -343,6 +345,7 @@ class _TranscriptEmitter:
                 latency_ms=max((saved_at - word_end) * 1000.0, 0.0),
                 revised=revised,
                 notes=notes,
+                overhead_us=round(overhead_us, 1),
             )
         )
         if not revised:
@@ -603,7 +606,7 @@ class DeepgramTranscriber:
             blocksize=self._config.blocksize,
             device=self._config.mic_device,
             session_time=session_time,
-            timing=self._timing,
+            timing=lambda: self._timing,
             is_muted=lambda: self._muted,
             vad=self._vad,
         )
