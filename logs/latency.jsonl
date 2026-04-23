@@ -1,0 +1,9 @@
+{"word":"how","source":"user","spoken_start":0.8979086239729077,"spoken_end":1.2179086239729076,"saved_at":1.4142708329600282,"latency_ms":196.36220898712065,"revised":false,"notes":"interpolated,interim"}
+{"word":"are","source":"user","spoken_start":1.2179086239729076,"spoken_end":1.2979086239729076,"saved_at":1.4145537079893984,"latency_ms":116.64508401649076,"revised":false,"notes":"interpolated,interim"}
+{"word":"you","source":"user","spoken_start":1.5379085239729076,"spoken_end":1.6979086239729078,"saved_at":2.1957046249881387,"latency_ms":497.7960010152309,"revised":false,"notes":"interpolated"}
+{"word":"that's","source":"user","spoken_start":5.486764416003134,"spoken_end":5.8067644160031335,"saved_at":18.255218582984526,"latency_ms":12448.454166981392,"revised":false,"notes":"interpolated,interim"}
+{"word":"good","source":"user","spoken_start":5.886764416003134,"spoken_end":6.126764216003134,"saved_at":19.230719207960647,"latency_ms":13103.954991957511,"revised":false,"notes":"interpolated,interim"}
+{"word":"to","source":"user","spoken_start":6.126764216003134,"spoken_end":6.206764416003134,"saved_at":19.230942416004837,"latency_ms":13024.178000001702,"revised":false,"notes":"interpolated,interim"}
+{"word":"hear","source":"user","spoken_start":6.206764416003134,"spoken_end":6.446764416003134,"saved_at":19.231128665967844,"latency_ms":12784.36424996471,"revised":false,"notes":"interpolated,interim"}
+{"word":"nothing","source":"user","spoken_start":27.379659958009142,"spoken_end":27.77965995800914,"saved_at":31.16288729099324,"latency_ms":3383.2273329840987,"revised":false,"notes":"interpolated,interim"}
+{"word":"much","source":"user","spoken_start":27.93965895800914,"spoken_end":28.259659958009145,"saved_at":32.01236370799597,"latency_ms":3752.7037499868284,"revised":false,"notes":"interpolated,interim"}
