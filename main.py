@@ -125,13 +125,26 @@ async def _run() -> None:
             session_clock=session_clock,
             logger=logger,
             latency_logger=latency_logger,
-            config=CrosstalkConfig(base_system_prompt=system_prompt),
+            config=CrosstalkConfig(
+                base_system_prompt=system_prompt,
+                bargein_enabled=_env_bool("BARGEIN_ENABLED", False),
+            ),
         )
 
     print(f"Logging char timings to {logger.path}")
     print(f"Logging word latencies to {latency_logger.path}")
+
+    # Start the mic + Deepgram connection and calibrate the VAD noise floor.
+    await deepgram.start(session_clock.now)
+    print("Calibrating mic noise floor (stay quiet for 1 second)...")
+    noise_floor = await deepgram.calibrate_vad(duration=1.0)
+    print(f"Noise floor: {noise_floor:.0f} RMS — speech threshold set to {noise_floor * 6:.0f} RMS")
+
     mode = "crosstalk" if crosstalk_enabled else "turn-based"
+    bargein = _env_bool("BARGEIN_ENABLED", False)
     print(f"Listening ({mode}). Say 'exit' or press Ctrl+C to stop.")
+    if not bargein:
+        print("Tip: Using headphones? Set BARGEIN_ENABLED=true in .env to interrupt the agent mid-speech.")
 
     first_turn = True
 

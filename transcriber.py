@@ -96,28 +96,76 @@ class _TurnTiming:
 class _LocalVAD:
     """Lightweight energy-based voice-activity detector running on the mic thread.
 
-    Computes RMS of each int16 PCM block and tracks the last time energy
-    exceeded `threshold`. Callers on the async side can query
-    `silence_seconds()` to find out how long the mic has been quiet.
+    Supports auto-calibration: call `calibrate()` at startup to measure the
+    ambient noise floor, then speech threshold is set to `noise_floor * multiplier`.
+    Also provides `speech_onset_since(t)` which detects a *transition* from
+    silence to speech after timestamp `t`, avoiding false triggers from
+    sustained ambient noise.
     """
 
-    def __init__(self, threshold: float, session_time: Callable[[], float]) -> None:
-        self._threshold = threshold
+    # How many consecutive speech frames count as an onset.
+    # At blocksize=160 / 16kHz each frame is 10ms, so 10 = ~100ms sustained.
+    ONSET_FRAMES: int = 10
+
+    def __init__(
+        self,
+        session_time: Callable[[], float],
+        threshold: float = 1500.0,
+        multiplier: float = 6.0,
+    ) -> None:
         self._session_time = session_time
+        self._threshold = threshold
+        self._multiplier = multiplier
+        self._noise_floor: float | None = None
         self._last_speech_at: float = session_time()
         self._lock = threading.Lock()
+        # Calibration state
+        self._cal_samples: list[float] = []
+        self._calibrating = False
+        # Onset detection: track consecutive speech frames and when onset began
+        self._consec_speech: int = 0
+        self._onset_at: float | None = None
+
+    def start_calibration(self) -> None:
+        """Begin collecting RMS samples for noise-floor calibration."""
+        with self._lock:
+            self._cal_samples = []
+            self._calibrating = True
+
+    def finish_calibration(self) -> float:
+        """Finish calibration, compute threshold, return noise floor RMS."""
+        with self._lock:
+            self._calibrating = False
+            if not self._cal_samples:
+                return self._threshold
+            self._noise_floor = sum(self._cal_samples) / len(self._cal_samples)
+            self._threshold = self._noise_floor * self._multiplier
+            return self._noise_floor
+
+    @staticmethod
+    def _rms(pcm_bytes: bytes) -> float:
+        n_samples = len(pcm_bytes) // 2
+        if n_samples == 0:
+            return 0.0
+        samples = struct.unpack(f"<{n_samples}h", pcm_bytes)
+        return math.sqrt(sum(s * s for s in samples) / n_samples)
 
     def feed(self, pcm_bytes: bytes) -> None:
         """Called from the mic callback thread with raw int16 PCM."""
-        n_samples = len(pcm_bytes) // 2
-        if n_samples == 0:
-            return
-        samples = struct.unpack(f"<{n_samples}h", pcm_bytes)
-        rms = math.sqrt(sum(s * s for s in samples) / n_samples)
-        if rms >= self._threshold:
-            now = self._session_time()
-            with self._lock:
+        rms = self._rms(pcm_bytes)
+        now = self._session_time()
+        with self._lock:
+            if self._calibrating:
+                self._cal_samples.append(rms)
+                return
+            is_speech = rms >= self._threshold
+            if is_speech:
                 self._last_speech_at = now
+                self._consec_speech += 1
+                if self._consec_speech >= self.ONSET_FRAMES and self._onset_at is None:
+                    self._onset_at = now
+            else:
+                self._consec_speech = 0
 
     def silence_seconds(self) -> float:
         """How many seconds of silence since the last speech frame."""
@@ -125,11 +173,24 @@ class _LocalVAD:
         with self._lock:
             return max(now - self._last_speech_at, 0.0)
 
+    def speech_onset_since(self, since: float) -> bool:
+        """True if a speech onset (transition from silence) occurred after `since`."""
+        with self._lock:
+            return self._onset_at is not None and self._onset_at > since
+
+    def clear_onset(self) -> None:
+        """Reset the onset marker (e.g. after consuming it)."""
+        with self._lock:
+            self._onset_at = None
+            self._consec_speech = 0
+
     def reset(self) -> None:
         """Mark current time as last speech (e.g. at turn start)."""
         now = self._session_time()
         with self._lock:
             self._last_speech_at = now
+            self._onset_at = None
+            self._consec_speech = 0
 
 
 class _MicrophoneCapture:
@@ -276,6 +337,10 @@ class _TranscriptEmitter:
 
 
 class _TranscriptState:
+    # Skip events that arrive within this window after state creation.
+    # Prevents stale Deepgram results from the previous turn's audio.
+    STALE_GUARD_S: float = 0.5
+
     def __init__(
         self,
         logger: SessionLogger,
@@ -290,6 +355,7 @@ class _TranscriptState:
         self._latest_final_transcript = ""
         self._completed = asyncio.Event()
         self._session_time = session_time
+        self._created_at = session_time()
         self._updates = updates
         self._emitter = _TranscriptEmitter(
             logger=logger,
@@ -396,12 +462,11 @@ class _TranscriptState:
 
 
 class DeepgramTranscriber:
-    def __init__(self, config: DeepgramConfig, vad_threshold: float = 1500.0) -> None:
+    def __init__(self, config: DeepgramConfig) -> None:
         self._config = config
         self._timing: _TurnTiming | None = None
         self._mic: _MicrophoneCapture | None = None
         self._vad: _LocalVAD | None = None
-        self._vad_threshold = vad_threshold
         self._websocket: websockets.WebSocketClientProtocol | None = None
         self._audio_queue: asyncio.Queue[bytes] | None = None
         self._sender_task: asyncio.Task[None] | None = None
@@ -417,6 +482,30 @@ class DeepgramTranscriber:
         if self._vad is None:
             return 0.0
         return self._vad.silence_seconds()
+
+    def speech_onset_since(self, since: float) -> bool:
+        """True if a speech onset occurred after the given timestamp."""
+        if self._vad is None:
+            return False
+        return self._vad.speech_onset_since(since)
+
+    def clear_onset(self) -> None:
+        """Consume the current onset marker."""
+        if self._vad is not None:
+            self._vad.clear_onset()
+
+    async def calibrate_vad(self, duration: float = 1.0) -> float:
+        """Measure ambient noise floor for `duration` seconds. Returns noise floor RMS.
+
+        Must be called after start(). Blocks for `duration` while the mic
+        is already running, collecting RMS samples to set the speech threshold.
+        """
+        if self._vad is None:
+            raise RuntimeError("Call start() before calibrate_vad().")
+        self._vad.start_calibration()
+        await asyncio.sleep(duration)
+        noise_floor = self._vad.finish_calibration()
+        return noise_floor
 
     def mute(self) -> None:
         self._muted = True
@@ -453,7 +542,6 @@ class DeepgramTranscriber:
         self._timing = _TurnTiming(session_time())
         self._audio_queue = asyncio.Queue()
         self._vad = _LocalVAD(
-            threshold=self._vad_threshold,
             session_time=session_time,
         )
         self._mic = _MicrophoneCapture(
@@ -578,7 +666,11 @@ class DeepgramTranscriber:
         self._current_state = state
         try:
             while True:
-                update = await updates.get()
+                try:
+                    update = await asyncio.wait_for(updates.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # No speech detected for 15s — end turn to avoid hanging.
+                    return
                 if update is None:
                     return
                 yield update
@@ -627,12 +719,22 @@ class DeepgramTranscriber:
                     if state is None:
                         # Between turns (mute period); drop any stray results.
                         continue
+                    # Guard: ignore events that arrive right after state
+                    # creation — they're likely stale from the prior turn.
+                    age = state._session_time() - state._created_at
+                    if age < state.STALE_GUARD_S:
+                        continue
                     state.handle_results(message)
                     if message.get("speech_final") and state.has_transcript:
                         state.complete()
                 elif event_type == "UtteranceEnd":
                     state = self._current_state
-                    if state is not None and state.has_transcript:
+                    if state is None:
+                        continue
+                    age = state._session_time() - state._created_at
+                    if age < state.STALE_GUARD_S:
+                        continue
+                    if state.has_transcript:
                         state.complete(utterance_end=True)
         except (websockets.ConnectionClosed, asyncio.CancelledError):
             return
