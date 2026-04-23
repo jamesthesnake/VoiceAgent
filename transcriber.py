@@ -260,18 +260,19 @@ class _MicrophoneCapture:
         else:
             capture_start = callback_now - (frames / self._sample_rate)
         self._timing.set_capture_origin(capture_start)
-        # Always feed the VAD so silence_seconds() works even while muted.
+        # Always feed the VAD from the real mic audio so local onset/silence
+        # detection still works even when we choose to send silence upstream.
         chunk = bytes(indata)
         if self._vad is not None:
             self._vad.feed(chunk)
         if self._loop is None:
             return
-        # When muted, stop sending audio entirely. The _send_audio loop will
-        # hit its 3-second timeout and send KeepAlive messages to keep the
-        # WebSocket alive without feeding Deepgram silence (which cold-starts
-        # its VAD every turn).
+        # Keep Deepgram's stream clock aligned with wall clock by continuing
+        # to send real-time audio cadence while muted, but replace the mic
+        # frame with silence. If we stop sending entirely, Deepgram word
+        # offsets collapse all muted gaps and our absolute timestamps drift.
         if self._is_muted is not None and self._is_muted():
-            return
+            chunk = b"\x00" * len(chunk)
         try:
             self._loop.call_soon_threadsafe(self._audio_queue.put_nowait, chunk)
         except RuntimeError:
