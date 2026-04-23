@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 from urllib.parse import urlencode
@@ -36,6 +37,13 @@ class ElevenLabsConfig:
     # to close, with this idle gap as a fallback.
     post_send_idle_timeout_s: float = 2.0
     speaker_device: int | str | None = None
+
+
+@dataclass(slots=True)
+class SpeakHooks:
+    on_first_text_sent: Callable[[float, str], None] | None = None
+    on_first_audio_received: Callable[[float], None] | None = None
+    on_first_audio_played: Callable[[float], None] | None = None
 
 
 class _StreamingTextChunker:
@@ -157,6 +165,7 @@ class ElevenLabsSpeaker:
         token_stream: AsyncIterator[str],
         clock: SessionClock,
         logger: SessionLogger,
+        hooks: SpeakHooks | None = None,
     ) -> str:
         params = urlencode(
             {
@@ -192,6 +201,7 @@ class ElevenLabsSpeaker:
                     clock=clock,
                     logger=logger,
                     send_done=send_done,
+                    hooks=hooks,
                 )
             )
             try:
@@ -207,7 +217,12 @@ class ElevenLabsSpeaker:
                         }
                     )
                 )
-                assistant_text = await self._send_text(websocket, token_stream)
+                assistant_text = await self._send_text(
+                    websocket,
+                    token_stream,
+                    clock,
+                    hooks,
+                )
                 send_done.set()
                 await receiver
             except asyncio.CancelledError:
@@ -229,16 +244,25 @@ class ElevenLabsSpeaker:
         self,
         websocket: websockets.WebSocketClientProtocol,
         token_stream: AsyncIterator[str],
+        clock: SessionClock,
+        hooks: SpeakHooks | None,
     ) -> str:
         chunker = _StreamingTextChunker()
         fragments: list[str] = []
+        sent_first_chunk = False
 
         async for token in token_stream:
             fragments.append(token)
             for chunk in chunker.push(token):
+                if not sent_first_chunk and hooks is not None and hooks.on_first_text_sent is not None:
+                    hooks.on_first_text_sent(clock.now(), chunk)
+                    sent_first_chunk = True
                 await self._send_text_chunk(websocket, chunk)
 
         for chunk in chunker.flush():
+            if not sent_first_chunk and hooks is not None and hooks.on_first_text_sent is not None:
+                hooks.on_first_text_sent(clock.now(), chunk)
+                sent_first_chunk = True
             await self._send_text_chunk(websocket, chunk)
 
         # With auto_mode=true, the empty-text EOS message is the synthesis
@@ -254,8 +278,10 @@ class ElevenLabsSpeaker:
         clock: SessionClock,
         logger: SessionLogger,
         send_done: asyncio.Event,
+        hooks: SpeakHooks | None = None,
     ) -> None:
         heard_audio = False
+        first_audio_played_logged = False
         send_done_at: float | None = None
         last_message_at: float | None = None
         loop = asyncio.get_running_loop()
@@ -288,9 +314,18 @@ class ElevenLabsSpeaker:
                 message = json.loads(raw_message)
                 audio_base64 = message.get("audio")
                 if audio_base64:
+                    if not heard_audio and hooks is not None and hooks.on_first_audio_received is not None:
+                        hooks.on_first_audio_received(clock.now())
                     heard_audio = True
                     audio_chunk = base64.b64decode(audio_base64)
                     chunk_start = await player.play(audio_chunk, clock)
+                    if (
+                        hooks is not None
+                        and hooks.on_first_audio_played is not None
+                        and not first_audio_played_logged
+                    ):
+                        hooks.on_first_audio_played(chunk_start)
+                        first_audio_played_logged = True
                     alignment = (
                         message.get("normalizedAlignment")
                         or message.get("normalized_alignment")

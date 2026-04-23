@@ -1,0 +1,130 @@
+{"turn_id":1,"event":"turn_started","at":1.3282619999954477,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"mic_unmuted","at":1.32901549997041,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"stt_first_partial","at":2.3458755830070004,"source":"stt","text":"trying it now","info":{}}
+{"turn_id":1,"event":"llm_speculation_started","at":2.3484940829803236,"source":"llm","text":"trying it now","info":{}}
+{"turn_id":1,"event":"llm_speculation_first_token","at":2.6665510829770938,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"llm_speculation_ready","at":2.697838291001972,"source":"llm","text":"How's it going so far?","info":{}}
+{"turn_id":1,"event":"llm_speculation_started","at":3.64043887500884,"source":"llm","text":"trying it now let's go what does this feel","info":{}}
+{"turn_id":1,"event":"llm_speculation_first_token","at":3.728442957974039,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"llm_speculation_wait","at":3.7421664579887874,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"user_last_speech_local","at":4.007934207969811,"source":"user","text":"trying it now let's go what does this feel like","info":{}}
+{"turn_id":1,"event":"stt_speech_final","at":4.227850374998525,"source":"stt","text":"trying it now let's go what does this feel like","info":{}}
+{"turn_id":1,"event":"llm_speculation_started","at":4.228384332964197,"source":"llm","text":"trying it now let's go what does this feel like","info":{}}
+{"turn_id":1,"event":"llm_speculation_first_token","at":4.4829897079616785,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"llm_speculation_ready","at":4.526581582962535,"source":"llm","text":"It feels like we're having a conversation. What are you trying to do or figure o","info":{}}
+{"turn_id":1,"event":"llm_buffer_used","at":4.526826832967345,"source":"llm","text":"It feels like we're having a conversation. What are you trying to do or figure o","info":{}}
+{"turn_id":1,"event":"tts_first_text_sent","at":4.7386878749821335,"source":"tts","text":"It feels like we're having a conversation. What are you trying to do or figure o","info":{}}
+{"turn_id":1,"event":"tts_first_audio_received","at":4.988934665976558,"source":"tts","text":"","info":{}}
+{"turn_id":1,"event":"tts_first_audio_played","at":5.129861227753245,"source":"tts","text":"","info":{}}
+{"turn_id":2,"event":"turn_started","at":9.98855512496084,"source":"system","text":"","info":{}}
+{"turn_id":2,"event":"mic_unmuted","at":9.98908541596029,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"turn_started","at":12.780611249967478,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"mic_unmuted","at":12.780793124984484,"source":"system","text":"","info":{}}
+{"turn_id":4,"event":"turn_started","at":27.783492082962766,"source":"system","text":"","info":{}}
+{"turn_id":4,"event":"mic_unmuted","at":27.784710749983788,"source":"system","text":"","info":{}}
+{"turn_id":5,"event":"turn_started","at":40.27310208295239,"source":"system","text":"","info":{}}
+{"turn_id":5,"event":"mic_unmuted","at":40.27342291595414,"source":"system","text":"","info":{}}
+{"turn_id":6,"event":"turn_started","at":55.27408004098106,"source":"system","text":"","info":{}}
+{"turn_id":6,"event":"mic_unmuted","at":55.274488665978424,"source":"system","text":"","info":{}}
+{"turn_id":7,"event":"turn_started","at":56.78500945796259,"source":"system","text":"","info":{}}
+{"turn_id":7,"event":"mic_unmuted","at":56.785222207952756,"source":"system","text":"","info":{}}
+{"turn_id":8,"event":"turn_started","at":71.78633145795902,"source":"system","text":"","info":{}}
+{"turn_id":8,"event":"mic_unmuted","at":71.7934135409887,"source":"system","text":"","info":{}}
+{"turn_id":9,"event":"turn_started","at":72.7769715829636,"source":"system","text":"","info":{}}
+{"turn_id":9,"event":"mic_unmuted","at":72.77712795796106,"source":"system","text":"","info":{}}
+{"turn_id":10,"event":"turn_started","at":87.77959591598483,"source":"system","text":"","info":{}}
+{"turn_id":10,"event":"mic_unmuted","at":87.78132320800796,"source":"system","text":"","info":{}}
+{"turn_id":11,"event":"turn_started","at":97.09692945796996,"source":"system","text":"","info":{}}
+{"turn_id":11,"event":"mic_unmuted","at":97.09800212498521,"source":"system","text":"","info":{}}
+{"turn_id":12,"event":"turn_started","at":112.10009099997114,"source":"system","text":"","info":{}}
+{"turn_id":12,"event":"mic_unmuted","at":112.10114291595528,"source":"system","text":"","info":{}}
+{"turn_id":13,"event":"turn_started","at":112.41628895798931,"source":"system","text":"","info":{}}
+{"turn_id":13,"event":"mic_unmuted","at":112.41643237497192,"source":"system","text":"","info":{}}
+{"turn_id":14,"event":"turn_started","at":127.41801483300515,"source":"system","text":"","info":{}}
+{"turn_id":14,"event":"mic_unmuted","at":127.41934329096694,"source":"system","text":"","info":{}}
+{"turn_id":15,"event":"turn_started","at":135.21108233300038,"source":"system","text":"","info":{}}
+{"turn_id":15,"event":"mic_unmuted","at":135.21631829097169,"source":"system","text":"","info":{}}
+{"turn_id":16,"event":"turn_started","at":150.21826141595375,"source":"system","text":"","info":{}}
+{"turn_id":16,"event":"mic_unmuted","at":150.21892833296442,"source":"system","text":"","info":{}}
+{"turn_id":17,"event":"turn_started","at":178.39934629097115,"source":"system","text":"","info":{}}
+{"turn_id":17,"event":"mic_unmuted","at":178.40091962495353,"source":"system","text":"","info":{}}
+{"turn_id":18,"event":"turn_started","at":193.40341387497028,"source":"system","text":"","info":{}}
+{"turn_id":18,"event":"mic_unmuted","at":193.40402829099912,"source":"system","text":"","info":{}}
+{"turn_id":19,"event":"turn_started","at":194.52139183296822,"source":"system","text":"","info":{}}
+{"turn_id":19,"event":"mic_unmuted","at":194.5215414579725,"source":"system","text":"","info":{}}
+{"turn_id":20,"event":"turn_started","at":209.53055387496715,"source":"system","text":"","info":{}}
+{"turn_id":20,"event":"mic_unmuted","at":209.53321987495292,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"turn_started","at":0.3201021659770049,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"mic_unmuted","at":0.32034350000321865,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"stt_first_partial","at":2.342226832988672,"source":"stt","text":"hello","info":{}}
+{"turn_id":1,"event":"user_last_speech_local","at":1.7324598329723813,"source":"user","text":"hello","info":{}}
+{"turn_id":1,"event":"stt_speech_final","at":4.691339540993795,"source":"stt","text":"hello","info":{}}
+{"turn_id":1,"event":"llm_reply_started","at":4.691621624981053,"source":"llm","text":"hello","info":{}}
+{"turn_id":1,"event":"llm_reply_first_token","at":5.218767999962438,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"tts_first_text_sent","at":5.2198585830046795,"source":"tts","text":"Hello.","info":{}}
+{"turn_id":1,"event":"tts_first_audio_received","at":5.37237570801517,"source":"tts","text":"","info":{}}
+{"turn_id":1,"event":"tts_first_audio_played","at":5.513387561768432,"source":"tts","text":"","info":{}}
+{"turn_id":2,"event":"turn_started","at":7.899451458011754,"source":"system","text":"","info":{}}
+{"turn_id":2,"event":"mic_unmuted","at":7.899713457969483,"source":"system","text":"","info":{}}
+{"turn_id":2,"event":"stt_first_partial","at":11.847700999991503,"source":"stt","text":"nothing much","info":{}}
+{"turn_id":2,"event":"user_last_speech_local","at":11.21766020799987,"source":"user","text":"nothing much","info":{}}
+{"turn_id":2,"event":"stt_speech_final","at":11.84945899999002,"source":"stt","text":"nothing much","info":{}}
+{"turn_id":2,"event":"llm_reply_started","at":11.849776791001204,"source":"llm","text":"nothing much","info":{}}
+{"turn_id":2,"event":"llm_reply_first_token","at":12.441243541019503,"source":"llm","text":"","info":{}}
+{"turn_id":2,"event":"tts_first_text_sent","at":12.462341915990692,"source":"tts","text":"Sometimes it's nice to just say hello.","info":{}}
+{"turn_id":2,"event":"tts_first_audio_received","at":12.668688083009329,"source":"tts","text":"","info":{}}
+{"turn_id":2,"event":"tts_first_audio_played","at":12.809635227771615,"source":"tts","text":"","info":{}}
+{"turn_id":3,"event":"turn_started","at":20.121433249965776,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"mic_unmuted","at":20.12283095798921,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"stt_first_partial","at":28.977046957996208,"source":"stt","text":"okay i'm","info":{}}
+{"turn_id":3,"event":"user_last_speech_local","at":28.566684249963146,"source":"user","text":"okay i'm still here","info":{}}
+{"turn_id":3,"event":"stt_speech_final","at":29.553834082966205,"source":"stt","text":"okay i'm still here","info":{}}
+{"turn_id":3,"event":"llm_reply_started","at":29.554076666012406,"source":"llm","text":"okay i'm still here","info":{}}
+{"turn_id":3,"event":"llm_reply_first_token","at":29.851984833017923,"source":"llm","text":"","info":{}}
+{"turn_id":3,"event":"tts_first_text_sent","at":29.90205849998165,"source":"tts","text":"I'm still here too.","info":{}}
+{"turn_id":3,"event":"tts_first_audio_received","at":30.089410999964457,"source":"tts","text":"","info":{}}
+{"turn_id":3,"event":"tts_first_audio_played","at":30.23029935277733,"source":"tts","text":"","info":{}}
+{"turn_id":4,"event":"turn_started","at":38.092423624999356,"source":"system","text":"","info":{}}
+{"turn_id":4,"event":"mic_unmuted","at":38.09361874999013,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"turn_started","at":0.4637922500260174,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"mic_unmuted","at":0.46464162500342354,"source":"system","text":"","info":{}}
+{"turn_id":1,"event":"stt_first_partial","at":1.5635641250410117,"source":"stt","text":"hello","info":{}}
+{"turn_id":1,"event":"user_last_speech_local","at":1.8350674160174094,"source":"user","text":"hello how are you","info":{}}
+{"turn_id":1,"event":"stt_speech_final","at":2.678060000005644,"source":"stt","text":"hello how are you","info":{}}
+{"turn_id":1,"event":"llm_reply_started","at":2.6784350409870967,"source":"llm","text":"hello how are you","info":{}}
+{"turn_id":1,"event":"llm_reply_first_token","at":3.162339915987104,"source":"llm","text":"","info":{}}
+{"turn_id":1,"event":"tts_first_text_sent","at":3.1797409580321983,"source":"tts","text":"Hello!","info":{}}
+{"turn_id":1,"event":"tts_first_audio_received","at":3.417490166029893,"source":"tts","text":"","info":{}}
+{"turn_id":1,"event":"tts_first_audio_played","at":3.558232561794248,"source":"tts","text":"","info":{}}
+{"turn_id":2,"event":"turn_started","at":8.169850000005681,"source":"system","text":"","info":{}}
+{"turn_id":2,"event":"mic_unmuted","at":8.170068208011799,"source":"system","text":"","info":{}}
+{"turn_id":2,"event":"stt_first_partial","at":12.332461500016507,"source":"stt","text":"time","info":{}}
+{"turn_id":2,"event":"user_last_speech_local","at":8.17006199999014,"source":"user","text":"time just moving forward","info":{}}
+{"turn_id":2,"event":"stt_speech_final","at":13.911740125040524,"source":"stt","text":"time just moving forward","info":{}}
+{"turn_id":2,"event":"llm_reply_started","at":13.912043041025754,"source":"llm","text":"time just moving forward","info":{}}
+{"turn_id":2,"event":"llm_reply_first_token","at":14.246074916038197,"source":"llm","text":"","info":{}}
+{"turn_id":2,"event":"tts_first_text_sent","at":14.260749790992122,"source":"tts","text":"Time indeed keeps moving forward.","info":{}}
+{"turn_id":2,"event":"tts_first_audio_received","at":14.596852458023932,"source":"tts","text":"","info":{}}
+{"turn_id":2,"event":"tts_first_audio_played","at":14.737579144821176,"source":"tts","text":"","info":{}}
+{"turn_id":3,"event":"turn_started","at":25.62076183303725,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"mic_unmuted","at":25.621282915992197,"source":"system","text":"","info":{}}
+{"turn_id":3,"event":"stt_first_partial","at":33.11878062499454,"source":"stt","text":"nothing","info":{}}
+{"turn_id":3,"event":"user_last_speech_local","at":25.62127166602295,"source":"user","text":"nothing much","info":{}}
+{"turn_id":3,"event":"stt_speech_final","at":33.627793416031636,"source":"stt","text":"nothing much","info":{}}
+{"turn_id":3,"event":"llm_reply_started","at":33.628504000022076,"source":"llm","text":"nothing much","info":{}}
+{"turn_id":3,"event":"llm_reply_first_token","at":34.18060070800129,"source":"llm","text":"","info":{}}
+{"turn_id":3,"event":"tts_first_text_sent","at":34.22946195799159,"source":"tts","text":"Sometimes it's nice to just relax and not have anything in particular on your mi","info":{}}
+{"turn_id":3,"event":"tts_first_audio_received","at":34.40947850001976,"source":"tts","text":"","info":{}}
+{"turn_id":3,"event":"tts_first_audio_played","at":34.550199394805496,"source":"tts","text":"","info":{}}
+{"turn_id":4,"event":"turn_started","at":45.482790250040125,"source":"system","text":"","info":{}}
+{"turn_id":4,"event":"mic_unmuted","at":45.483048041001894,"source":"system","text":"","info":{}}
+{"turn_id":4,"event":"stt_first_partial","at":55.850033791037276,"source":"stt","text":"hello","info":{}}
+{"turn_id":4,"event":"user_last_speech_local","at":55.57902737503173,"source":"user","text":"hello","info":{}}
+{"turn_id":4,"event":"stt_speech_final","at":56.71936691598967,"source":"stt","text":"hello","info":{}}
+{"turn_id":4,"event":"llm_reply_started","at":56.71981991600478,"source":"llm","text":"hello","info":{}}
+{"turn_id":4,"event":"llm_reply_first_token","at":57.42994666600134,"source":"llm","text":"","info":{}}
+{"turn_id":4,"event":"tts_first_text_sent","at":57.430684124992695,"source":"tts","text":"Hello again.","info":{}}
+{"turn_id":4,"event":"tts_first_audio_received","at":57.58762200002093,"source":"tts","text":"","info":{}}
+{"turn_id":4,"event":"tts_first_audio_played","at":57.728399269799375,"source":"tts","text":"","info":{}}
+{"turn_id":5,"event":"turn_started","at":65.78775870800018,"source":"system","text":"","info":{}}
+{"turn_id":5,"event":"mic_unmuted","at":65.78816758299945,"source":"system","text":"","info":{}}

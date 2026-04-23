@@ -13,7 +13,15 @@ from urllib.parse import urlencode
 import sounddevice as sd
 import websockets
 
-from log import CharEvent, LatencyLogger, SessionLogger, WordLatencyEvent, append_note
+from log import (
+    CharEvent,
+    LatencyLogger,
+    SessionLogger,
+    TurnMetricEvent,
+    TurnMetricsLogger,
+    WordLatencyEvent,
+    append_note,
+)
 
 
 def _coerce_device(value: int | str | None) -> int | str | None:
@@ -31,7 +39,7 @@ class DeepgramConfig:
     endpointing_ms: int = 120
     utterance_end_ms: int | None = None
     channels: int = 1
-    blocksize: int = 160
+    blocksize: int = 480
     mic_device: int | str | None = None
 
 
@@ -172,6 +180,10 @@ class _LocalVAD:
         now = self._session_time()
         with self._lock:
             return max(now - self._last_speech_at, 0.0)
+
+    def last_speech_at(self) -> float:
+        with self._lock:
+            return self._last_speech_at
 
     def speech_onset_since(self, since: float) -> bool:
         """True if a speech onset (transition from silence) occurred after `since`."""
@@ -348,6 +360,8 @@ class _TranscriptState:
         session_time: Callable[[], float],
         timing: _TurnTiming,
         updates: asyncio.Queue[TranscriptUpdate | None] | None = None,
+        turn_id: int | None = None,
+        turn_metrics_logger: TurnMetricsLogger | None = None,
     ) -> None:
         self._segments: dict[float, _SegmentState] = {}
         self._final_segments: dict[float, list[TimedWord]] = {}
@@ -357,11 +371,36 @@ class _TranscriptState:
         self._session_time = session_time
         self._created_at = session_time()
         self._updates = updates
+        self._turn_id = turn_id
+        self._turn_metrics_logger = turn_metrics_logger
+        self._logged_first_partial = False
         self._emitter = _TranscriptEmitter(
             logger=logger,
             latency_logger=latency_logger,
             session_time=session_time,
             timing=timing,
+        )
+
+    def log_metric(
+        self,
+        event: str,
+        *,
+        at: float | None = None,
+        source: str = "",
+        text: str = "",
+        info: dict[str, Any] | None = None,
+    ) -> None:
+        if self._turn_id is None or self._turn_metrics_logger is None:
+            return
+        self._turn_metrics_logger.write_event(
+            TurnMetricEvent(
+                turn_id=self._turn_id,
+                event=event,
+                at=self._session_time() if at is None else at,
+                source=source,
+                text=text,
+                info=info or {},
+            )
         )
 
     def complete(self, utterance_end: bool = False) -> None:
@@ -405,6 +444,13 @@ class _TranscriptState:
         transcript = (alternative.get("transcript") or "").strip()
         if transcript:
             self._latest_interim_transcript = transcript
+            if not self._logged_first_partial:
+                self.log_metric(
+                    "stt_first_partial",
+                    source="stt",
+                    text=transcript,
+                )
+                self._logged_first_partial = True
 
         words = [
             TimedWord(
@@ -482,6 +528,11 @@ class DeepgramTranscriber:
         if self._vad is None:
             return 0.0
         return self._vad.silence_seconds()
+
+    def last_speech_at(self) -> float:
+        if self._vad is None:
+            return 0.0
+        return self._vad.last_speech_at()
 
     def speech_onset_since(self, since: float) -> bool:
         """True if a speech onset occurred after the given timestamp."""
@@ -621,6 +672,8 @@ class DeepgramTranscriber:
         session_time: Callable[[], float],
         logger: SessionLogger,
         latency_logger: LatencyLogger,
+        turn_id: int | None = None,
+        turn_metrics_logger: TurnMetricsLogger | None = None,
     ) -> UtteranceResult:
         await self.start(session_time)
         assert self._timing is not None
@@ -630,6 +683,8 @@ class DeepgramTranscriber:
             latency_logger=latency_logger,
             session_time=session_time,
             timing=self._timing,
+            turn_id=turn_id,
+            turn_metrics_logger=turn_metrics_logger,
         )
         self._current_state = state
         try:
@@ -647,6 +702,8 @@ class DeepgramTranscriber:
         session_time: Callable[[], float],
         logger: SessionLogger,
         latency_logger: LatencyLogger,
+        turn_id: int | None = None,
+        turn_metrics_logger: TurnMetricsLogger | None = None,
     ):
         """Yield TranscriptUpdate events for a single user turn.
 
@@ -662,6 +719,8 @@ class DeepgramTranscriber:
             session_time=session_time,
             timing=self._timing,
             updates=updates,
+            turn_id=turn_id,
+            turn_metrics_logger=turn_metrics_logger,
         )
         self._current_state = state
         try:
@@ -719,13 +778,25 @@ class DeepgramTranscriber:
                     if state is None:
                         # Between turns (mute period); drop any stray results.
                         continue
-                    # Guard: ignore events that arrive right after state
-                    # creation — they're likely stale from the prior turn.
-                    age = state._session_time() - state._created_at
-                    if age < state.STALE_GUARD_S:
-                        continue
+                    # Always process interim results so speculation fires
+                    # immediately.  Only block *completion* events during the
+                    # stale-guard window to prevent ghost turn endings.
                     state.handle_results(message)
                     if message.get("speech_final") and state.has_transcript:
+                        age = state._session_time() - state._created_at
+                        if age < state.STALE_GUARD_S:
+                            continue
+                        state.log_metric(
+                            "user_last_speech_local",
+                            at=self.last_speech_at(),
+                            source="user",
+                            text=state.transcript,
+                        )
+                        state.log_metric(
+                            "stt_speech_final",
+                            source="stt",
+                            text=state.transcript,
+                        )
                         state.complete()
                 elif event_type == "UtteranceEnd":
                     state = self._current_state
@@ -735,6 +806,18 @@ class DeepgramTranscriber:
                     if age < state.STALE_GUARD_S:
                         continue
                     if state.has_transcript:
+                        state.log_metric(
+                            "user_last_speech_local",
+                            at=self.last_speech_at(),
+                            source="user",
+                            text=state.transcript,
+                            info={"via": "utterance_end"},
+                        )
+                        state.log_metric(
+                            "stt_utterance_end",
+                            source="stt",
+                            text=state.transcript,
+                        )
                         state.complete(utterance_end=True)
         except (websockets.ConnectionClosed, asyncio.CancelledError):
             return

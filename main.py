@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 
@@ -9,9 +10,15 @@ from dotenv import load_dotenv
 
 from crosstalk import CrosstalkConfig, CrosstalkRunner
 from llm import GroqChatClient, GroqConfig
-from log import LatencyLogger, SessionClock, SessionLogger
+from log import (
+    LatencyLogger,
+    SessionClock,
+    SessionLogger,
+    TurnMetricEvent,
+    TurnMetricsLogger,
+)
 from transcriber import DeepgramConfig, DeepgramTranscriber
-from tts import ElevenLabsConfig, ElevenLabsSpeaker
+from tts import ElevenLabsConfig, ElevenLabsSpeaker, SpeakHooks
 
 
 def _required_env(name: str) -> str:
@@ -61,12 +68,42 @@ def _latency_log_path() -> Path:
     return Path("logs") / "latency.jsonl"
 
 
+def _turn_metrics_log_path() -> Path:
+    configured = os.getenv("TURN_METRICS_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return Path("logs") / "turn_metrics.jsonl"
+
+
+async def _trace_first_token(
+    stream: AsyncIterator[str],
+    turn_id: int,
+    event: str,
+    clock: SessionClock,
+    logger: TurnMetricsLogger,
+) -> AsyncIterator[str]:
+    saw_first_token = False
+    async for token in stream:
+        if not saw_first_token:
+            logger.write_event(
+                TurnMetricEvent(
+                    turn_id=turn_id,
+                    event=event,
+                    at=clock.now(),
+                    source="llm",
+                )
+            )
+            saw_first_token = True
+        yield token
+
+
 async def _run() -> None:
     load_dotenv()
 
     session_clock = SessionClock()
     logger = SessionLogger(_log_path())
     latency_logger = LatencyLogger(_latency_log_path())
+    turn_metrics_logger = TurnMetricsLogger(_turn_metrics_log_path())
 
     deepgram = DeepgramTranscriber(
         DeepgramConfig(
@@ -78,14 +115,14 @@ async def _run() -> None:
             smart_format=_env_bool("DEEPGRAM_SMART_FORMAT", False),
             endpointing_ms=int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "120")),
             utterance_end_ms=_optional_int("DEEPGRAM_UTTERANCE_END_MS"),
-            blocksize=int(os.getenv("DEEPGRAM_BLOCKSIZE", "160")),
+            blocksize=int(os.getenv("DEEPGRAM_BLOCKSIZE", "480")),
             mic_device=_optional_device("MIC_DEVICE"),
         )
     )
     llm = GroqChatClient(
         GroqConfig(
             api_key=_required_env("GROQ_API_KEY"),
-            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
             temperature=float(os.getenv("GROQ_TEMPERATURE", "0.2")),
             max_completion_tokens=int(
                 os.getenv("GROQ_MAX_COMPLETION_TOKENS", "512")
@@ -115,7 +152,7 @@ async def _run() -> None:
         {"role": "system", "content": system_prompt}
     ]
 
-    crosstalk_enabled = _env_bool("CROSSTALK_ENABLED", True)
+    crosstalk_enabled = _env_bool("CROSSTALK_ENABLED", False)
     crosstalk: CrosstalkRunner | None = None
     if crosstalk_enabled:
         crosstalk = CrosstalkRunner(
@@ -125,6 +162,7 @@ async def _run() -> None:
             session_clock=session_clock,
             logger=logger,
             latency_logger=latency_logger,
+            turn_metrics_logger=turn_metrics_logger,
             config=CrosstalkConfig(
                 base_system_prompt=system_prompt,
                 bargein_enabled=_env_bool("BARGEIN_ENABLED", False),
@@ -133,30 +171,35 @@ async def _run() -> None:
 
     print(f"Logging char timings to {logger.path}")
     print(f"Logging word latencies to {latency_logger.path}")
+    print(f"Logging turn metrics to {turn_metrics_logger.path}")
 
-    # Start the mic + Deepgram connection and calibrate the VAD noise floor.
+    # Start the mic + Deepgram connection.
     await deepgram.start(session_clock.now)
-    print("Calibrating mic noise floor (stay quiet for 1 second)...")
-    noise_floor = await deepgram.calibrate_vad(duration=1.0)
-    print(f"Noise floor: {noise_floor:.0f} RMS — speech threshold set to {noise_floor * 6:.0f} RMS")
+
+    # Only calibrate VAD when crosstalk is enabled (barge-in needs it).
+    if crosstalk_enabled:
+        print("Calibrating mic noise floor (stay quiet for 1 second)...")
+        noise_floor = await deepgram.calibrate_vad(duration=1.0)
+        print(f"Noise floor: {noise_floor:.0f} RMS — speech threshold set to {noise_floor * 6:.0f} RMS")
 
     mode = "crosstalk" if crosstalk_enabled else "turn-based"
-    bargein = _env_bool("BARGEIN_ENABLED", False)
     print(f"Listening ({mode}). Say 'exit' or press Ctrl+C to stop.")
-    if not bargein:
-        print("Tip: Using headphones? Set BARGEIN_ENABLED=true in .env to interrupt the agent mid-speech.")
+    if not crosstalk_enabled:
+        print("Tip: Set CROSSTALK_ENABLED=true in .env for speculative turn-taking and barge-in.")
 
     first_turn = True
+    turn_id = 0
 
     try:
         while True:
+            turn_id += 1
             if first_turn:
                 first_turn = False
             else:
                 print("Listening for next turn...")
 
             if crosstalk is not None:
-                result = await crosstalk.run_turn(conversation)
+                result = await crosstalk.run_turn(conversation, turn_id=turn_id)
                 transcript = result.user_text.strip()
                 if not transcript:
                     continue
@@ -179,11 +222,29 @@ async def _run() -> None:
                     )
                 continue
 
+            turn_metrics_logger.write_event(
+                TurnMetricEvent(
+                    turn_id=turn_id,
+                    event="turn_started",
+                    at=session_clock.now(),
+                    source="system",
+                )
+            )
             deepgram.unmute()
+            turn_metrics_logger.write_event(
+                TurnMetricEvent(
+                    turn_id=turn_id,
+                    event="mic_unmuted",
+                    at=session_clock.now(),
+                    source="system",
+                )
+            )
             utterance = await deepgram.capture_utterance(
                 session_clock.now,
                 logger,
                 latency_logger,
+                turn_id=turn_id,
+                turn_metrics_logger=turn_metrics_logger,
             )
             deepgram.mute()
             transcript = utterance.transcript.strip()
@@ -195,10 +256,53 @@ async def _run() -> None:
                 break
 
             conversation.append({"role": "user", "content": transcript})
-            assistant_text = await speaker.speak_stream(
+            turn_metrics_logger.write_event(
+                TurnMetricEvent(
+                    turn_id=turn_id,
+                    event="llm_reply_started",
+                    at=session_clock.now(),
+                    source="llm",
+                    text=transcript,
+                )
+            )
+            llm_stream = _trace_first_token(
                 llm.stream_response(conversation),
+                turn_id=turn_id,
+                event="llm_reply_first_token",
+                clock=session_clock,
+                logger=turn_metrics_logger,
+            )
+            assistant_text = await speaker.speak_stream(
+                llm_stream,
                 session_clock,
                 logger,
+                hooks=SpeakHooks(
+                    on_first_text_sent=lambda at, chunk: turn_metrics_logger.write_event(
+                        TurnMetricEvent(
+                            turn_id=turn_id,
+                            event="tts_first_text_sent",
+                            at=at,
+                            source="tts",
+                            text=chunk[:80],
+                        )
+                    ),
+                    on_first_audio_received=lambda at: turn_metrics_logger.write_event(
+                        TurnMetricEvent(
+                            turn_id=turn_id,
+                            event="tts_first_audio_received",
+                            at=at,
+                            source="tts",
+                        )
+                    ),
+                    on_first_audio_played=lambda at: turn_metrics_logger.write_event(
+                        TurnMetricEvent(
+                            turn_id=turn_id,
+                            event="tts_first_audio_played",
+                            at=at,
+                            source="tts",
+                        )
+                    ),
+                ),
             )
             if assistant_text:
                 print(f"assistant> {assistant_text}")
@@ -207,6 +311,7 @@ async def _run() -> None:
         await deepgram.stop()
         logger.close()
         latency_logger.close()
+        turn_metrics_logger.close()
 
 
 def main() -> None:

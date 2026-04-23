@@ -9,7 +9,7 @@ from groq import AsyncGroq
 @dataclass(slots=True)
 class GroqConfig:
     api_key: str
-    model: str = "llama-3.3-70b-versatile"
+    model: str = "openai/gpt-oss-20b"
     temperature: float = 0.2
     max_completion_tokens: int = 512
 
@@ -36,4 +36,3 @@ class GroqChatClient:
             delta = chunk.choices[0].delta.content or ""
             if delta:
                 yield delta
-

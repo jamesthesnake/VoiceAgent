@@ -22,9 +22,15 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from llm import GroqChatClient
-from log import LatencyLogger, SessionClock, SessionLogger
+from log import (
+    LatencyLogger,
+    SessionClock,
+    SessionLogger,
+    TurnMetricEvent,
+    TurnMetricsLogger,
+)
 from transcriber import DeepgramTranscriber
-from tts import ElevenLabsSpeaker
+from tts import ElevenLabsSpeaker, SpeakHooks
 
 
 WAIT_TOKEN = "<wait/>"
@@ -72,6 +78,7 @@ class CrosstalkRunner:
         session_clock: SessionClock,
         logger: SessionLogger,
         latency_logger: LatencyLogger,
+        turn_metrics_logger: TurnMetricsLogger | None,
         config: CrosstalkConfig,
     ) -> None:
         self._transcriber = transcriber
@@ -80,6 +87,7 @@ class CrosstalkRunner:
         self._session_clock = session_clock
         self._logger = logger
         self._latency_logger = latency_logger
+        self._turn_metrics_logger = turn_metrics_logger
         self._config = config
 
     # ------------------------------------------------------------------
@@ -87,33 +95,43 @@ class CrosstalkRunner:
     # ------------------------------------------------------------------
 
     async def run_turn(
-        self, conversation: list[dict[str, str]]
+        self,
+        conversation: list[dict[str, str]],
+        turn_id: int,
     ) -> CrosstalkResult:
         self._transcriber.unmute()
+        self._log_metric(turn_id, "turn_started", source="system")
+        self._log_metric(turn_id, "mic_unmuted", source="system")
         final_user_text = ""
         spec_task: asyncio.Task[str] | None = None
-        last_spec_text: str | None = None
+        last_spec_word_count: int = 0
 
         try:
             async for update in self._transcriber.iter_utterance(
                 self._session_clock.now,
                 self._logger,
                 self._latency_logger,
+                turn_id=turn_id,
+                turn_metrics_logger=self._turn_metrics_logger,
             ):
                 text = update.transcript.strip()
                 if text:
                     final_user_text = text
 
-                # Fire / restart speculation (pure LLM buffer, never TTS).
+                # Debounce: only restart speculation when word count grows,
+                # not on every interim character change. This avoids wasting
+                # LLM calls on "hell" → "hello" → "hello " noise and makes
+                # it more likely the spec result is usable by speech_final.
+                word_count = len(text.split()) if text else 0
                 if (
                     text
                     and len(text) >= self._config.min_speculation_chars
-                    and text != last_spec_text
+                    and word_count > last_spec_word_count
                 ):
                     spec_task = self._restart_buffer_spec(
-                        spec_task, conversation, text
+                        spec_task, conversation, text, turn_id
                     )
-                    last_spec_text = text
+                    last_spec_word_count = word_count
 
                 if update.speech_final or update.utterance_end:
                     break
@@ -143,11 +161,22 @@ class CrosstalkRunner:
 
         if buffered_text:
             # Speculation produced a reply — pipe it to TTS.
-            assistant_text, interrupted = await self._speak_text(buffered_text)
+            self._log_metric(
+                turn_id,
+                "llm_buffer_used",
+                source="llm",
+                text=buffered_text[:80],
+            )
+            assistant_text, interrupted = await self._speak_text(
+                buffered_text,
+                turn_id,
+            )
         elif final_user_text:
             # No usable speculation — cold LLM + TTS.
             assistant_text, interrupted = await self._final_reply(
-                conversation, final_user_text
+                conversation,
+                final_user_text,
+                turn_id,
             )
 
         return CrosstalkResult(
@@ -165,6 +194,7 @@ class CrosstalkRunner:
         current: asyncio.Task[str] | None,
         conversation: list[dict[str, str]],
         user_text: str,
+        turn_id: int,
     ) -> asyncio.Task[str]:
         """Cancel the previous speculation and start a new one.
 
@@ -172,15 +202,22 @@ class CrosstalkRunner:
         the cancellation so we never block iter_utterance.
         """
         if current is not None and not current.done():
+            self._log_metric(
+                turn_id,
+                "llm_speculation_cancelled",
+                source="llm",
+                text=user_text,
+            )
             current.cancel()
         return asyncio.create_task(
-            self._buffer_speculate(conversation, user_text)
+            self._buffer_speculate(conversation, user_text, turn_id)
         )
 
     async def _buffer_speculate(
         self,
         conversation: list[dict[str, str]],
         user_text: str,
+        turn_id: int,
     ) -> str:
         """Run a speculative LLM call and buffer the result as plain text.
 
@@ -189,32 +226,60 @@ class CrosstalkRunner:
         """
         messages = self._build_messages(conversation, user_text)
         token_stream = self._llm.stream_response(messages)
+        self._log_metric(
+            turn_id,
+            "llm_speculation_started",
+            source="llm",
+            text=user_text,
+        )
         tokens: list[str] = []
+        saw_first_token = False
         try:
             async for token in token_stream:
+                if not saw_first_token:
+                    self._log_metric(
+                        turn_id,
+                        "llm_speculation_first_token",
+                        source="llm",
+                    )
+                    saw_first_token = True
                 tokens.append(token)
                 accumulated = "".join(tokens).lstrip()
                 if self._looks_like_wait(accumulated):
+                    self._log_metric(
+                        turn_id,
+                        "llm_speculation_wait",
+                        source="llm",
+                    )
                     await _drain(token_stream)
                     return ""
         except asyncio.CancelledError:
             await _drain_and_close(token_stream)
             raise
-        return "".join(tokens).strip()
+        buffered = "".join(tokens).strip()
+        if buffered:
+            self._log_metric(
+                turn_id,
+                "llm_speculation_ready",
+                source="llm",
+                text=buffered[:80],
+            )
+        return buffered
 
     # ------------------------------------------------------------------
     # Speaking (TTS with optional barge-in)
     # ------------------------------------------------------------------
 
-    async def _speak_text(self, text: str) -> tuple[str, bool]:
+    async def _speak_text(self, text: str, turn_id: int) -> tuple[str, bool]:
         """Send pre-generated text to TTS with barge-in support."""
         stream = _iter_once(text)
-        return await self._speak_with_bargein(stream)
+        return await self._speak_with_bargein(stream, turn_id)
 
     async def _final_reply(
         self,
         conversation: list[dict[str, str]],
         user_text: str,
+        turn_id: int,
     ) -> tuple[str, bool]:
         """Cold path: LLM stream → TTS with barge-in."""
         messages: list[dict[str, str]] = [
@@ -222,9 +287,19 @@ class CrosstalkRunner:
             *(conversation[1:] if conversation and conversation[0].get("role") == "system" else conversation),
             {"role": "user", "content": user_text},
         ]
-        stream = self._llm.stream_response(messages)
+        self._log_metric(
+            turn_id,
+            "llm_reply_started",
+            source="llm",
+            text=user_text,
+        )
+        stream = self._trace_first_token(
+            turn_id,
+            "llm_reply_first_token",
+            self._llm.stream_response(messages),
+        )
         try:
-            return await self._speak_with_bargein(stream)
+            return await self._speak_with_bargein(stream, turn_id)
         except Exception as exc:
             print(f"[crosstalk] final reply error: {exc!r}")
             return "", False
@@ -232,12 +307,37 @@ class CrosstalkRunner:
     async def _speak_with_bargein(
         self,
         token_source: AsyncIterator[str],
+        turn_id: int,
     ) -> tuple[str, bool]:
         """Play TTS.  If barge-in is enabled and a speech onset is detected,
         abort playback and return (partial_text, True)."""
+        hooks = SpeakHooks(
+            on_first_text_sent=lambda at, chunk: self._log_metric(
+                turn_id,
+                "tts_first_text_sent",
+                at=at,
+                source="tts",
+                text=chunk[:80],
+            ),
+            on_first_audio_received=lambda at: self._log_metric(
+                turn_id,
+                "tts_first_audio_received",
+                at=at,
+                source="tts",
+            ),
+            on_first_audio_played=lambda at: self._log_metric(
+                turn_id,
+                "tts_first_audio_played",
+                at=at,
+                source="tts",
+            ),
+        )
         if not self._config.bargein_enabled:
             text = await self._speaker.speak_stream(
-                token_source, self._session_clock, self._logger
+                token_source,
+                self._session_clock,
+                self._logger,
+                hooks=hooks,
             )
             return text, False
 
@@ -249,7 +349,10 @@ class CrosstalkRunner:
 
         speak_task = asyncio.create_task(
             self._speaker.speak_stream(
-                capture, self._session_clock, self._logger
+                capture,
+                self._session_clock,
+                self._logger,
+                hooks=hooks,
             )
         )
         watcher_task = asyncio.create_task(
@@ -269,6 +372,12 @@ class CrosstalkRunner:
                 pass
             partial = capture.text.strip()
             print("[crosstalk] barge-in: user interrupted, stopping playback")
+            self._log_metric(
+                turn_id,
+                "tts_bargein",
+                source="tts",
+                text=partial[:80],
+            )
             return partial, True
 
         # Normal finish.
@@ -316,6 +425,42 @@ class CrosstalkRunner:
             normalized.startswith("<wait")
             or normalized.startswith("</wait")
             or normalized == "wait"
+        )
+
+    async def _trace_first_token(
+        self,
+        turn_id: int,
+        event: str,
+        stream: AsyncIterator[str],
+    ) -> AsyncIterator[str]:
+        saw_first_token = False
+        async for token in stream:
+            if not saw_first_token:
+                self._log_metric(turn_id, event, source="llm")
+                saw_first_token = True
+            yield token
+
+    def _log_metric(
+        self,
+        turn_id: int,
+        event: str,
+        *,
+        at: float | None = None,
+        source: str = "",
+        text: str = "",
+        info: dict[str, object] | None = None,
+    ) -> None:
+        if self._turn_metrics_logger is None:
+            return
+        self._turn_metrics_logger.write_event(
+            TurnMetricEvent(
+                turn_id=turn_id,
+                event=event,
+                at=self._session_clock.now() if at is None else at,
+                source=source,
+                text=text,
+                info={} if info is None else dict(info),
+            )
         )
 
 
