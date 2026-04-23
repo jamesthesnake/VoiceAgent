@@ -52,6 +52,13 @@ class CrosstalkConfig:
     base_system_prompt: str
     # Minimum transcript length (chars) before we bother speculating.
     min_speculation_chars: int = 2
+    # How many chars of LLM output to peek before deciding wait-vs-speak.
+    decision_peek_chars: int = 12
+    # How long the user must be quiet (local VAD) before we commit a
+    # speculation to TTS mid-turn.  This is the early-commit gate.
+    commit_silence_s: float = 0.3
+    # Polling interval while checking silence for commit.
+    silence_poll_s: float = 0.03
     # Barge-in: enable onset-based detection during playback.
     bargein_enabled: bool = True
     # Polling interval for barge-in watcher.
@@ -103,7 +110,8 @@ class CrosstalkRunner:
         self._log_metric(turn_id, "turn_started", source="system")
         self._log_metric(turn_id, "mic_unmuted", source="system")
         final_user_text = ""
-        spec_task: asyncio.Task[str] | None = None
+        spec_task: asyncio.Task[None] | None = None
+        pipe: _SpecPipe | None = None
         last_spec_word_count: int = 0
 
         try:
@@ -118,18 +126,26 @@ class CrosstalkRunner:
                 if text:
                     final_user_text = text
 
-                # Debounce: only restart speculation when word count grows,
-                # not on every interim character change. This avoids wasting
-                # LLM calls on "hell" → "hello" → "hello " noise and makes
-                # it more likely the spec result is usable by speech_final.
+                # Debounce: only restart speculation when word count grows.
                 word_count = len(text.split()) if text else 0
                 if (
                     text
                     and len(text) >= self._config.min_speculation_chars
                     and word_count > last_spec_word_count
                 ):
-                    spec_task = self._restart_buffer_spec(
-                        spec_task, conversation, text, turn_id
+                    if spec_task is not None and not spec_task.done():
+                        self._log_metric(
+                            turn_id,
+                            "llm_speculation_cancelled",
+                            source="llm",
+                            text=text,
+                        )
+                        spec_task.cancel()
+                    pipe = _SpecPipe()
+                    spec_task = asyncio.create_task(
+                        self._live_speculate(
+                            conversation, text, turn_id, pipe
+                        )
                     )
                     last_spec_word_count = word_count
 
@@ -139,45 +155,59 @@ class CrosstalkRunner:
             self._transcriber.mute()
 
         # ----------------------------------------------------------
-        # Resolve response: use buffered speculation or fall back
+        # Resolve response
         # ----------------------------------------------------------
-        buffered_text = ""
-        if spec_task is not None:
-            if spec_task.done():
-                try:
-                    buffered_text = spec_task.result()
-                except Exception:
-                    buffered_text = ""
-            else:
-                # Speculation still running — give it a short window.
-                try:
-                    buffered_text = await asyncio.wait_for(spec_task, timeout=0.3)
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                    buffered_text = ""
-                    spec_task.cancel()
-
         assistant_text = ""
         interrupted = False
 
-        if buffered_text:
-            # Speculation produced a reply — pipe it to TTS.
-            self._log_metric(
-                turn_id,
-                "llm_buffer_used",
-                source="llm",
-                text=buffered_text[:80],
+        if pipe is not None and pipe.committed:
+            # Early commit won — pipe live token stream straight to TTS.
+            self._log_metric(turn_id, "spec_early_commit", source="llm")
+            assistant_text, interrupted = await self._speak_with_bargein(
+                pipe, turn_id
             )
-            assistant_text, interrupted = await self._speak_text(
-                buffered_text,
-                turn_id,
-            )
-        elif final_user_text:
-            # No usable speculation — cold LLM + TTS.
-            assistant_text, interrupted = await self._final_reply(
-                conversation,
-                final_user_text,
-                turn_id,
-            )
+            # Let the spec task finish draining LLM tokens to pipe.
+            if spec_task is not None and not spec_task.done():
+                try:
+                    await spec_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        else:
+            # No early commit — wait for spec to finish, use buffer.
+            buffered = ""
+            if spec_task is not None:
+                if spec_task.done():
+                    buffered = (
+                        pipe.buffered_text
+                        if pipe and not pipe.is_wait
+                        else ""
+                    )
+                else:
+                    try:
+                        await asyncio.wait_for(spec_task, timeout=0.3)
+                        buffered = (
+                            pipe.buffered_text
+                            if pipe and not pipe.is_wait
+                            else ""
+                        )
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                        buffered = ""
+                        spec_task.cancel()
+
+            if buffered:
+                self._log_metric(
+                    turn_id,
+                    "llm_buffer_used",
+                    source="llm",
+                    text=buffered[:80],
+                )
+                assistant_text, interrupted = await self._speak_text(
+                    buffered, turn_id
+                )
+            elif final_user_text:
+                assistant_text, interrupted = await self._final_reply(
+                    conversation, final_user_text, turn_id
+                )
 
         return CrosstalkResult(
             user_text=final_user_text,
@@ -186,43 +216,20 @@ class CrosstalkRunner:
         )
 
     # ------------------------------------------------------------------
-    # Buffered speculation (no mute, no TTS — pure LLM text)
+    # Live speculation with early-commit
     # ------------------------------------------------------------------
 
-    def _restart_buffer_spec(
-        self,
-        current: asyncio.Task[str] | None,
-        conversation: list[dict[str, str]],
-        user_text: str,
-        turn_id: int,
-    ) -> asyncio.Task[str]:
-        """Cancel the previous speculation and start a new one.
-
-        Returns the new task.  Does NOT await the old one — fire and forget
-        the cancellation so we never block iter_utterance.
-        """
-        if current is not None and not current.done():
-            self._log_metric(
-                turn_id,
-                "llm_speculation_cancelled",
-                source="llm",
-                text=user_text,
-            )
-            current.cancel()
-        return asyncio.create_task(
-            self._buffer_speculate(conversation, user_text, turn_id)
-        )
-
-    async def _buffer_speculate(
+    async def _live_speculate(
         self,
         conversation: list[dict[str, str]],
         user_text: str,
         turn_id: int,
-    ) -> str:
-        """Run a speculative LLM call and buffer the result as plain text.
-
-        Returns the full reply text, or "" if the LLM said <wait/>.
-        Never touches the transcriber or speaker.
+        pipe: _SpecPipe,
+    ) -> None:
+        """Stream LLM tokens into *pipe*.  If the model is clearly replying
+        (not <wait/>) and the user has been quiet for ``commit_silence_s``,
+        mute the transcriber to end ``iter_utterance`` and mark the pipe as
+        committed so ``run_turn`` can pipe it straight to TTS.
         """
         messages = self._build_messages(conversation, user_text)
         token_stream = self._llm.stream_response(messages)
@@ -232,8 +239,10 @@ class CrosstalkRunner:
             source="llm",
             text=user_text,
         )
-        tokens: list[str] = []
+        peek: list[str] = []
+        decided_reply = False
         saw_first_token = False
+
         try:
             async for token in token_stream:
                 if not saw_first_token:
@@ -243,28 +252,71 @@ class CrosstalkRunner:
                         source="llm",
                     )
                     saw_first_token = True
-                tokens.append(token)
-                accumulated = "".join(tokens).lstrip()
-                if self._looks_like_wait(accumulated):
-                    self._log_metric(
-                        turn_id,
-                        "llm_speculation_wait",
-                        source="llm",
-                    )
-                    await _drain(token_stream)
-                    return ""
+
+                if not decided_reply:
+                    # Peek phase: accumulate tokens to decide wait vs reply.
+                    peek.append(token)
+                    accumulated = "".join(peek).lstrip()
+                    if self._looks_like_wait(accumulated):
+                        self._log_metric(
+                            turn_id,
+                            "llm_speculation_wait",
+                            source="llm",
+                        )
+                        pipe.mark_wait()
+                        await _drain(token_stream)
+                        pipe.finish()
+                        return
+                    if (
+                        len(accumulated)
+                        >= self._config.decision_peek_chars
+                        or (
+                            not accumulated.startswith("<")
+                            and len(accumulated) >= 2
+                        )
+                    ):
+                        decided_reply = True
+                        # Flush peeked tokens into the pipe.
+                        for t in peek:
+                            pipe.put(t)
+                else:
+                    # Decided it's a reply — stream tokens into pipe.
+                    pipe.put(token)
+
+                    # Check local silence for early commit.
+                    if not pipe.committed:
+                        silence = self._transcriber.silence_seconds()
+                        if silence >= self._config.commit_silence_s:
+                            self._log_metric(
+                                turn_id,
+                                "spec_commit_silence",
+                                source="llm",
+                                info={"silence_s": round(silence, 3)},
+                            )
+                            self._transcriber.mute()
+                            pipe.mark_committed()
+
+            # LLM stream finished.
+            if not decided_reply:
+                full = "".join(peek).strip()
+                if not full or self._looks_like_wait(full):
+                    pipe.mark_wait()
+                else:
+                    for t in peek:
+                        pipe.put(t)
+            pipe.finish()
+            if pipe.buffered_text:
+                self._log_metric(
+                    turn_id,
+                    "llm_speculation_ready",
+                    source="llm",
+                    text=pipe.buffered_text[:80],
+                )
+
         except asyncio.CancelledError:
             await _drain_and_close(token_stream)
+            pipe.finish()
             raise
-        buffered = "".join(tokens).strip()
-        if buffered:
-            self._log_metric(
-                turn_id,
-                "llm_speculation_ready",
-                source="llm",
-                text=buffered[:80],
-            )
-        return buffered
 
     # ------------------------------------------------------------------
     # Speaking (TTS with optional barge-in)
@@ -462,6 +514,56 @@ class CrosstalkRunner:
                 info={} if info is None else dict(info),
             )
         )
+
+
+class _SpecPipe:
+    """Producer–consumer token pipe between speculation and TTS.
+
+    The speculation task writes tokens with ``put()`` and signals
+    ``mark_committed()`` when it decides to commit early (user quiet,
+    model clearly replying).  ``run_turn`` checks ``committed`` and
+    iterates the pipe as an ``AsyncIterator[str]`` for TTS.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._tokens: list[str] = []
+        self._committed = False
+        self._is_wait = False
+
+    def put(self, token: str) -> None:
+        self._tokens.append(token)
+        self._queue.put_nowait(token)
+
+    def finish(self) -> None:
+        self._queue.put_nowait(None)
+
+    def mark_committed(self) -> None:
+        self._committed = True
+
+    def mark_wait(self) -> None:
+        self._is_wait = True
+
+    @property
+    def committed(self) -> bool:
+        return self._committed
+
+    @property
+    def is_wait(self) -> bool:
+        return self._is_wait
+
+    @property
+    def buffered_text(self) -> str:
+        return "".join(self._tokens).strip()
+
+    def __aiter__(self) -> _SpecPipe:
+        return self
+
+    async def __anext__(self) -> str:
+        token = await self._queue.get()
+        if token is None:
+            raise StopAsyncIteration
+        return token
 
 
 class _TextCapture:

@@ -294,6 +294,7 @@ class _TranscriptEmitter:
         self._last_word: TimedWord | None = None
 
     def emit_word(self, word: TimedWord, notes: str, revised: bool = False) -> None:
+        saved_at = self._session_time()  # Timestamp immediately on arrival.
         events: list[CharEvent] = []
         word_start = self._timing.word_time(word.start)
         word_end = self._timing.word_time(word.end)
@@ -332,7 +333,6 @@ class _TranscriptEmitter:
             )
 
         self._logger.write_events(events)
-        saved_at = self._session_time()
         self._latency_logger.write_event(
             WordLatencyEvent(
                 word=text,
@@ -750,7 +750,7 @@ class DeepgramTranscriber:
         audio_queue = self._audio_queue
         while True:
             try:
-                audio_chunk = await asyncio.wait_for(audio_queue.get(), timeout=3.0)
+                chunk = await asyncio.wait_for(audio_queue.get(), timeout=3.0)
             except asyncio.TimeoutError:
                 try:
                     await websocket.send(json.dumps({"type": "KeepAlive"}))
@@ -759,8 +759,17 @@ class DeepgramTranscriber:
                 continue
             except asyncio.CancelledError:
                 return
+            # Batch: drain all queued chunks into one websocket send.
+            # Prevents backlog when the event loop falls behind.
+            parts = [chunk]
+            while not audio_queue.empty():
+                try:
+                    parts.append(audio_queue.get_nowait())
+                except Exception:
+                    break
+            payload = b"".join(parts) if len(parts) > 1 else chunk
             try:
-                await websocket.send(audio_chunk)
+                await websocket.send(payload)
             except Exception:
                 return
 
