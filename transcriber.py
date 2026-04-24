@@ -357,6 +357,10 @@ class _TranscriptState:
     # Skip events that arrive within this window after state creation.
     # Prevents stale Deepgram results from the previous turn's audio.
     STALE_GUARD_S: float = 0.5
+    # Deepgram can slightly shift a segment's reported `start` across interim
+    # updates even when it is the same phrase. If we key segments strictly by
+    # that value, the same interim words get emitted twice as "new" words.
+    SEGMENT_MATCH_WINDOW_S: float = 0.05
 
     def __init__(
         self,
@@ -385,6 +389,42 @@ class _TranscriptState:
             session_time=session_time,
             timing=timing,
         )
+
+    @staticmethod
+    def _prefix_overlap(previous: list[TimedWord], current: list[TimedWord]) -> int:
+        overlap = 0
+        for previous_word, current_word in zip(previous, current):
+            if previous_word.text != current_word.text:
+                break
+            overlap += 1
+        return overlap
+
+    def _resolve_segment(self, message_start: float, words: list[TimedWord]) -> tuple[float, _SegmentState]:
+        segment_key = round(message_start, 3)
+        segment = self._segments.get(segment_key)
+        if segment is not None:
+            return segment_key, segment
+
+        best_key: float | None = None
+        best_overlap = -1
+        best_diff = self.SEGMENT_MATCH_WINDOW_S + 1.0
+        for candidate_key, candidate in self._segments.items():
+            diff = abs(candidate_key - segment_key)
+            if diff > self.SEGMENT_MATCH_WINDOW_S:
+                continue
+            candidate_words = candidate.final_words or candidate.last_words
+            overlap = self._prefix_overlap(candidate_words, words)
+            if overlap > best_overlap or (overlap == best_overlap and diff < best_diff):
+                best_key = candidate_key
+                best_overlap = overlap
+                best_diff = diff
+
+        if best_key is not None and (best_overlap > 0 or not words):
+            return best_key, self._segments[best_key]
+
+        segment = _SegmentState()
+        self._segments[segment_key] = segment
+        return segment_key, segment
 
     def log_metric(
         self,
@@ -467,8 +507,7 @@ class _TranscriptState:
             if (raw_word.get("word") or raw_word.get("punctuated_word"))
         ]
 
-        segment_key = round(float(message.get("start", 0.0)), 3)
-        segment = self._segments.setdefault(segment_key, _SegmentState())
+        segment_key, segment = self._resolve_segment(float(message.get("start", 0.0)), words)
 
         shared = min(segment.emitted_until, len(words))
         for index in range(shared):
@@ -624,6 +663,8 @@ class DeepgramTranscriber:
                 "endpointing": str(self._config.endpointing_ms),
                 "punctuate": str(self._config.punctuate).lower(),
                 "smart_format": str(self._config.smart_format).lower(),
+                "no_delay": "true",
+                "filler_words": "false",
             }
         )
         if self._config.utterance_end_ms is not None:

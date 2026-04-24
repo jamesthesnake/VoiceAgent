@@ -8,6 +8,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
+
 from crosstalk import CrosstalkConfig, CrosstalkRunner
 from llm import GroqChatClient, GroqConfig
 from log import (
@@ -115,7 +120,7 @@ async def _run() -> None:
             smart_format=_env_bool("DEEPGRAM_SMART_FORMAT", False),
             endpointing_ms=int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "120")),
             utterance_end_ms=_optional_int("DEEPGRAM_UTTERANCE_END_MS"),
-            blocksize=int(os.getenv("DEEPGRAM_BLOCKSIZE", "160")),
+            blocksize=int(os.getenv("DEEPGRAM_BLOCKSIZE", "80")),
             mic_device=_optional_device("MIC_DEVICE"),
         )
     )
@@ -315,6 +320,8 @@ async def _run() -> None:
 
 
 def main() -> None:
+    if uvloop is not None:
+        uvloop.install()
     asyncio.run(_run())
 
 
